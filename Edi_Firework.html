@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Edinburgh 3D Fireworks</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link href="https://unpkg.com/maplibre-gl@3.4.0/dist/maplibre-gl.css" rel="stylesheet" />
+<script src="https://unpkg.com/maplibre-gl@3.4.0/dist/maplibre-gl.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.8.0/proj4.js"></script>
+<style>body { margin: 0; overflow: hidden; } #map { position: absolute; top: 0; bottom: 0; width: 100%; background-color: #000; }</style>
+</head>
+<body>
+<div id="map"></div>
+
+<script type="module">
+import * as THREE from 'https://unpkg.com/three@0.158.0/build/three.module.js';
+
+/* ---------------- Map Setup ---------------- */
+const map = new maplibregl.Map({
+  container: 'map',
+  style: 'https://tiles.openfreemap.org/styles/positron',
+  // CHANGED: Edinburgh Coordinates (Princes Street Gardens area)
+  center: [-3.2027, 55.9495], 
+  zoom: 15.5,
+  pitch: 65,
+  bearing: 15, // Looking towards the Castle/Old Town
+  antialias: true,
+  interactive: true
+});
+
+/* ---------------- Camera Animation Logic ---------------- */
+let lastTime = 0;
+function rotateCamera(timestamp) {
+  const rotationSpeed = 0.05; 
+  const tiltSpeed = timestamp / 2000; 
+  
+  const currentBearing = map.getBearing();
+  map.setBearing(currentBearing + rotationSpeed);
+
+  const newPitch = 60 + Math.sin(tiltSpeed) * 15;
+  map.setPitch(newPitch);
+
+  requestAnimationFrame(rotateCamera);
+}
+
+/* ---------------- Firework Factory ---------------- */
+// (Logic kept identical to original)
+function createFirework(lng, lat) {
+  const targetAltitude = 100 + Math.random() * 120;
+  const mercGround = maplibregl.MercatorCoordinate.fromLngLat({ lng, lat }, 0);
+  const scale = mercGround.meterInMercatorCoordinateUnits();
+
+  const count = 180;
+  const geometry = new THREE.BufferGeometry();
+  const positions = new Float32Array(count * 3).fill(0);
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+
+  const material = new THREE.PointsMaterial({
+    color: new THREE.Color().setHSL(Math.random(), 1, 0.6),
+    size: 4,
+    transparent: true,
+    opacity: 1,
+    depthWrite: false
+  });
+
+  const points = new THREE.Points(geometry, material);
+  
+  const launchVX = (Math.random() - 0.5) * 2.0; 
+  const launchVZ = (Math.random() - 0.5) * 2.0;
+
+  points.userData = {
+    state: 'launching',
+    currentAlt: 0,
+    targetAlt: targetAltitude,
+    lng, lat,
+    scale,
+    launchVX,
+    launchVZ,
+    velocities: Array.from({length: count}, () => ({
+      x: (Math.random() - 0.5) * 18,
+      y: (Math.random() - 0.2) * 22,
+      z: (Math.random() - 0.5) * 18
+    })),
+    life: new Array(count).fill(1.0)
+  };
+
+  return points;
+}
+
+map.on('load', async () => {
+  requestAnimationFrame(rotateCamera);
+
+  /* --- 3D Buildings (MODIFIED FOR EDINBURGH) --- */
+  // Instead of fetching a static London GeoJSON, we use the vector tiles 
+  // from the style (OpenFreeMap/OpenMapTiles) to extrude buildings globally.
+  
+  map.addLayer({
+    'id': 'buildings-3d',
+    'source': 'openmaptiles', // The source defined in the 'positron' style
+    'source-layer': 'building',
+    'type': 'fill-extrusion',
+    'paint': {
+      'fill-extrusion-color': '#111115',
+      // Use real height data if available, otherwise fallback to 15m
+      'fill-extrusion-height': ['interpolate', ['linear'], ['zoom'], 15, 0, 15.05, ['get', 'render_height']],
+      'fill-extrusion-base': ['interpolate', ['linear'], ['zoom'], 15, 0, 15.05, ['get', 'render_min_height']],
+      'fill-extrusion-opacity': 0.9
+    }
+  });
+
+  /* --- Fireworks Layer --- */
+  const fireworksLayer = {
+    id: 'fireworks',
+    type: 'custom',
+    renderingMode: '3d',
+    onAdd(map, gl) {
+      this.camera = new THREE.Camera();
+      this.scene = new THREE.Scene();
+      this.renderer = new THREE.WebGLRenderer({ canvas: map.getCanvas(), context: gl, antialias: true, alpha: true });
+      this.renderer.autoClear = false;
+      this.fireworks = [];
+
+      setInterval(() => {
+        const center = map.getCenter();
+        const spread = 0.005; // Slightly increased spread for visual effect
+        const lng = center.lng + (Math.random() - 0.5) * spread;
+        const lat = center.lat + (Math.random() - 0.5) * spread;
+        
+        const fw = createFirework(lng, lat);
+        this.scene.add(fw);
+        this.fireworks.push(fw);
+      }, 450);
+    },
+
+    render(gl, matrix) {
+      this.camera.projectionMatrix.fromArray(matrix);
+      
+      for (let i = this.fireworks.length - 1; i >= 0; i--) {
+        const fw = this.fireworks[i];
+        const ud = fw.userData;
+
+        if (ud.state === 'launching') {
+          ud.lng += ud.launchVX * 0.00003;
+          ud.lat += ud.launchVZ * 0.00003;
+          ud.currentAlt += 7.0; 
+          const merc = maplibregl.MercatorCoordinate.fromLngLat({ lng: ud.lng, lat: ud.lat }, ud.currentAlt);
+          fw.position.set(merc.x, merc.y, merc.z);
+          if (ud.currentAlt >= ud.targetAlt) ud.state = 'exploding';
+        } else {
+          const pos = fw.geometry.attributes.position.array;
+          let anyAlive = false;
+          for (let j = 0; j < ud.velocities.length; j++) {
+            if (ud.life[j] <= 0) continue;
+            pos[j*3]     += ud.velocities[j].x * ud.scale * 0.04;
+            pos[j*3 + 1] += ud.velocities[j].y * ud.scale * 0.04;
+            pos[j*3 + 2] += ud.velocities[j].z * ud.scale * 0.04;
+            ud.velocities[j].y -= 9.8 * ud.scale * 0.015;
+            ud.life[j] -= 0.012;
+            anyAlive = true;
+          }
+          fw.material.opacity -= 0.01;
+          fw.geometry.attributes.position.needsUpdate = true;
+          if (!anyAlive || fw.material.opacity <= 0) {
+            this.scene.remove(fw);
+            fw.geometry.dispose();
+            fw.material.dispose();
+            this.fireworks.splice(i, 1);
+          }
+        }
+      }
+      this.renderer.resetState();
+      this.renderer.render(this.scene, this.camera);
+      map.triggerRepaint();
+    }
+  };
+
+  map.addLayer(fireworksLayer);
+});
+</script>
+</body>
+</html>
