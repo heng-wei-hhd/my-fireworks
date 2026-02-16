@@ -1,63 +1,67 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8" />
-<title>Edinburgh 3D Fireworks</title>
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<link href="https://unpkg.com/maplibre-gl@3.4.0/dist/maplibre-gl.css" rel="stylesheet" />
-<script src="https://unpkg.com/maplibre-gl@3.4.0/dist/maplibre-gl.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.8.0/proj4.js"></script>
-<style>body { margin: 0; overflow: hidden; } #map { position: absolute; top: 0; bottom: 0; width: 100%; background-color: #000; }</style>
-</head>
-<body>
-<div id="map"></div>
-
 <script type="module">
 import * as THREE from 'https://unpkg.com/three@0.158.0/build/three.module.js';
+
+/* ---------------- 判断是否为手机 (屏幕宽度小于 768px) ---------------- */
+const isMobile = window.innerWidth < 768;
 
 /* ---------------- Map Setup ---------------- */
 const map = new maplibregl.Map({
   container: 'map',
   style: 'https://tiles.openfreemap.org/styles/positron',
-  // CHANGED: Edinburgh Coordinates (Princes Street Gardens area)
-  center: [-3.2027, 55.9495], 
-  zoom: 15.5,
-  pitch: 65,
-  bearing: 15, // Looking towards the Castle/Old Town
+  // 爱丁堡中心
+  center: [-3.200, 55.948], 
+  // 【修复1】如果是手机，就缩小一点 (13.5)，视野更开阔；电脑则保持 15
+  zoom: isMobile ? 13.5 : 15,
+  // 【修复2】手机上把仰角调低一点 (50度)，防止建筑物挡住太多视线
+  pitch: isMobile ? 50 : 60,
+  bearing: 15,
   antialias: true,
   interactive: true
 });
 
 /* ---------------- Camera Animation Logic ---------------- */
-let lastTime = 0;
-function rotateCamera(timestamp) {
-  const rotationSpeed = 0.05; 
-  const tiltSpeed = timestamp / 2000; 
-  
-  const currentBearing = map.getBearing();
-  map.setBearing(currentBearing + rotationSpeed);
+// 增加一个开关：如果用户在操作，就暂停旋转
+let userInteracting = false;
 
-  const newPitch = 60 + Math.sin(tiltSpeed) * 15;
-  map.setPitch(newPitch);
+// 监听用户操作：一旦触摸或鼠标按下，就停止自动旋转
+map.on('mousedown', () => { userInteracting = true; });
+map.on('touchstart', () => { userInteracting = true; });
+map.on('dragstart', () => { userInteracting = true; });
+
+// (可选) 如果你希望用户松手后过一会儿恢复旋转，可以取消下面这行的注释
+// map.on('moveend', () => { setTimeout(() => userInteracting = false, 2000); });
+
+function rotateCamera(timestamp) {
+  // 【修复3】只有当用户没有在操作时，才自动旋转
+  if (!userInteracting) {
+    const rotationSpeed = 0.03; 
+    map.setBearing(map.getBearing() + rotationSpeed);
+
+    const tiltSpeed = timestamp / 3000; 
+    const newPitch = (isMobile ? 50 : 60) + Math.sin(tiltSpeed) * 10;
+    map.setPitch(newPitch);
+  }
 
   requestAnimationFrame(rotateCamera);
 }
 
 /* ---------------- Firework Factory ---------------- */
-// (Logic kept identical to original)
 function createFirework(lng, lat) {
-  const targetAltitude = 100 + Math.random() * 120;
+  // 手机上稍微降低一点爆炸高度，保证在屏幕内
+  const targetAltitude = (isMobile ? 150 : 120) + Math.random() * 100;
   const mercGround = maplibregl.MercatorCoordinate.fromLngLat({ lng, lat }, 0);
   const scale = mercGround.meterInMercatorCoordinateUnits();
 
-  const count = 180;
+  // 手机为了性能，减少一点粒子数量 (150 vs 200)
+  const count = isMobile ? 150 : 200; 
   const geometry = new THREE.BufferGeometry();
   const positions = new Float32Array(count * 3).fill(0);
   geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
 
   const material = new THREE.PointsMaterial({
     color: new THREE.Color().setHSL(Math.random(), 1, 0.6),
-    size: 4,
+    // 手机屏幕像素密度高，粒子稍微调大一点点
+    size: isMobile ? 6 : 5, 
     transparent: true,
     opacity: 1,
     depthWrite: false
@@ -77,9 +81,9 @@ function createFirework(lng, lat) {
     launchVX,
     launchVZ,
     velocities: Array.from({length: count}, () => ({
-      x: (Math.random() - 0.5) * 18,
-      y: (Math.random() - 0.2) * 22,
-      z: (Math.random() - 0.5) * 18
+      x: (Math.random() - 0.5) * 20,
+      y: (Math.random() - 0.2) * 25,
+      z: (Math.random() - 0.5) * 20
     })),
     life: new Array(count).fill(1.0)
   };
@@ -90,25 +94,36 @@ function createFirework(lng, lat) {
 map.on('load', async () => {
   requestAnimationFrame(rotateCamera);
 
-  /* --- 3D Buildings (MODIFIED FOR EDINBURGH) --- */
-  // Instead of fetching a static London GeoJSON, we use the vector tiles 
-  // from the style (OpenFreeMap/OpenMapTiles) to extrude buildings globally.
-  
+  const layers = map.getStyle().layers;
+  let labelLayerId;
+  for (let i = 0; i < layers.length; i++) {
+    if (layers[i].type === 'symbol' && layers[i].layout['text-field']) {
+      labelLayerId = layers[i].id;
+      break;
+    }
+  }
+
   map.addLayer({
     'id': 'buildings-3d',
-    'source': 'openmaptiles', // The source defined in the 'positron' style
+    'source': 'openmaptiles', 
     'source-layer': 'building',
     'type': 'fill-extrusion',
     'paint': {
-      'fill-extrusion-color': '#111115',
-      // Use real height data if available, otherwise fallback to 15m
-      'fill-extrusion-height': ['interpolate', ['linear'], ['zoom'], 15, 0, 15.05, ['get', 'render_height']],
-      'fill-extrusion-base': ['interpolate', ['linear'], ['zoom'], 15, 0, 15.05, ['get', 'render_min_height']],
-      'fill-extrusion-opacity': 0.9
+      'fill-extrusion-color': '#222', 
+      'fill-extrusion-height': [
+        'interpolate', ['linear'], ['zoom'],
+        15, 0,
+        15.05, ['coalesce', ['get', 'render_height'], 15] 
+      ],
+      'fill-extrusion-base': [
+        'interpolate', ['linear'], ['zoom'],
+        15, 0,
+        15.05, ['coalesce', ['get', 'render_min_height'], 0]
+      ],
+      'fill-extrusion-opacity': 0.8
     }
-  });
+  }, labelLayerId);
 
-  /* --- Fireworks Layer --- */
   const fireworksLayer = {
     id: 'fireworks',
     type: 'custom',
@@ -116,20 +131,26 @@ map.on('load', async () => {
     onAdd(map, gl) {
       this.camera = new THREE.Camera();
       this.scene = new THREE.Scene();
-      this.renderer = new THREE.WebGLRenderer({ canvas: map.getCanvas(), context: gl, antialias: true, alpha: true });
+      this.renderer = new THREE.WebGLRenderer({ 
+        canvas: map.getCanvas(), 
+        context: gl, 
+        antialias: true, 
+        alpha: true 
+      });
       this.renderer.autoClear = false;
       this.fireworks = [];
 
       setInterval(() => {
         const center = map.getCenter();
-        const spread = 0.005; // Slightly increased spread for visual effect
+        // 手机屏幕小，稍微增加一点烟花散布范围
+        const spread = isMobile ? 0.008 : 0.006; 
         const lng = center.lng + (Math.random() - 0.5) * spread;
         const lat = center.lat + (Math.random() - 0.5) * spread;
         
         const fw = createFirework(lng, lat);
         this.scene.add(fw);
         this.fireworks.push(fw);
-      }, 450);
+      }, 500);
     },
 
     render(gl, matrix) {
@@ -142,7 +163,7 @@ map.on('load', async () => {
         if (ud.state === 'launching') {
           ud.lng += ud.launchVX * 0.00003;
           ud.lat += ud.launchVZ * 0.00003;
-          ud.currentAlt += 7.0; 
+          ud.currentAlt += 6.0; 
           const merc = maplibregl.MercatorCoordinate.fromLngLat({ lng: ud.lng, lat: ud.lat }, ud.currentAlt);
           fw.position.set(merc.x, merc.y, merc.z);
           if (ud.currentAlt >= ud.targetAlt) ud.state = 'exploding';
@@ -154,11 +175,11 @@ map.on('load', async () => {
             pos[j*3]     += ud.velocities[j].x * ud.scale * 0.04;
             pos[j*3 + 1] += ud.velocities[j].y * ud.scale * 0.04;
             pos[j*3 + 2] += ud.velocities[j].z * ud.scale * 0.04;
-            ud.velocities[j].y -= 9.8 * ud.scale * 0.015;
-            ud.life[j] -= 0.012;
+            ud.velocities[j].y -= 9.8 * ud.scale * 0.02; 
+            ud.life[j] -= 0.015; 
             anyAlive = true;
           }
-          fw.material.opacity -= 0.01;
+          fw.material.opacity -= 0.01; 
           fw.geometry.attributes.position.needsUpdate = true;
           if (!anyAlive || fw.material.opacity <= 0) {
             this.scene.remove(fw);
@@ -177,5 +198,3 @@ map.on('load', async () => {
   map.addLayer(fireworksLayer);
 });
 </script>
-</body>
-</html>
