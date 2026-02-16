@@ -1,70 +1,256 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>马年烟花许愿</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<link href="https://unpkg.com/maplibre-gl@3.4.0/dist/maplibre-gl.css" rel="stylesheet" />
+<script src="https://unpkg.com/maplibre-gl@3.4.0/dist/maplibre-gl.js"></script>
+<style>
+    body { margin: 0; overflow: hidden; background-color: #000; font-family: "Microsoft YaHei", sans-serif; }
+    #map { position: absolute; top: 0; bottom: 0; width: 100%; }
+    
+    /* UI 控制面板 */
+    #ui-container {
+        position: absolute;
+        bottom: 30px;
+        left: 50%;
+        transform: translateX(-50%);
+        width: 90%;
+        max-width: 400px;
+        background: rgba(20, 20, 30, 0.85);
+        backdrop-filter: blur(10px);
+        padding: 20px;
+        border-radius: 20px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        z-index: 10;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+        text-align: center;
+        transition: opacity 0.5s;
+    }
+
+    /* 输入框 */
+    .input-group { display: flex; gap: 10px; margin-bottom: 15px; }
+    input {
+        flex: 1;
+        padding: 12px;
+        border-radius: 10px;
+        border: none;
+        background: rgba(255, 255, 255, 0.1);
+        color: #fff;
+        font-size: 16px;
+        outline: none;
+    }
+    input::placeholder { color: rgba(255, 255, 255, 0.5); }
+
+    /* 颜色选择器 */
+    .color-options { display: flex; justify-content: space-between; margin-bottom: 20px; }
+    .color-btn {
+        width: 30%;
+        padding: 8px;
+        border: 2px solid transparent;
+        border-radius: 8px;
+        cursor: pointer;
+        font-weight: bold;
+        color: #fff;
+        transition: transform 0.2s;
+    }
+    .color-btn.active { border-color: #fff; transform: scale(1.05); }
+    .btn-red { background: linear-gradient(45deg, #ff4d4d, #990000); }
+    .btn-gold { background: linear-gradient(45deg, #ffd700, #b8860b); }
+    .btn-blue { background: linear-gradient(45deg, #00bfff, #00008b); }
+
+    /* 发射按钮 */
+    #fire-btn {
+        width: 100%;
+        padding: 15px;
+        border: none;
+        border-radius: 10px;
+        background: linear-gradient(90deg, #ff3333, #ff8833);
+        color: #fff;
+        font-size: 18px;
+        font-weight: bold;
+        cursor: pointer;
+        box-shadow: 0 4px 15px rgba(255, 50, 50, 0.4);
+    }
+    #fire-btn:active { transform: scale(0.98); }
+
+    /* 马年大吉 文字特效 */
+    #greeting-overlay {
+        position: absolute;
+        top: 40%;
+        left: 50%;
+        transform: translate(-50%, -50%) scale(0.5);
+        color: #ffd700;
+        font-size: 4rem;
+        font-weight: 900;
+        text-shadow: 0 0 20px rgba(255, 0, 0, 0.8), 0 0 50px rgba(255, 215, 0, 0.6);
+        pointer-events: none;
+        opacity: 0;
+        transition: all 1s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        z-index: 5;
+        white-space: nowrap;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+    }
+    #greeting-overlay .sub-text {
+        font-size: 1.2rem;
+        color: #fff;
+        margin-top: 10px;
+        font-weight: normal;
+        text-shadow: 0 2px 4px rgba(0,0,0,0.8);
+    }
+    .show-greeting { opacity: 1 !important; transform: translate(-50%, -50%) scale(1) !important; }
+    
+    /* 手机适配 */
+    @media (max-width: 768px) {
+        #greeting-overlay { font-size: 3rem; }
+        #ui-container { bottom: 20px; padding: 15px; }
+    }
+</style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<div id="greeting-overlay">
+    马 年 大 吉
+    <div class="sub-text">愿您的2026 繁花似锦</div>
+</div>
+
+<div id="ui-container">
+    <div class="input-group">
+        <input type="text" id="postcode-input" placeholder="输入邮编 (如 EH1 2NG)">
+    </div>
+    
+    <div class="color-options">
+        <button class="color-btn btn-red active" onclick="selectColor('red')">红红火火</button>
+        <button class="color-btn btn-gold" onclick="selectColor('gold')">金玉满堂</button>
+        <button class="color-btn btn-blue" onclick="selectColor('blue')">星辰大海</button>
+    </div>
+
+    <button id="fire-btn" onclick="startCelebration()">🎆 在此燃放烟花 🎆</button>
+</div>
+
 <script type="module">
 import * as THREE from 'https://unpkg.com/three@0.158.0/build/three.module.js';
 
-/* ---------------- 判断是否为手机 (屏幕宽度小于 768px) ---------------- */
-const isMobile = window.innerWidth < 768;
+/* ---------------- 全局状态 ---------------- */
+let selectedColor = 'red'; // 默认红色
+let isMobile = window.innerWidth < 768;
+let targetLngLat = null; // 用户搜索的目标位置
 
-/* ---------------- Map Setup ---------------- */
+// 暴露给 HTML onclick 使用的函数
+window.selectColor = (color) => {
+    selectedColor = color;
+    document.querySelectorAll('.color-btn').forEach(btn => btn.classList.remove('active'));
+    document.querySelector(`.btn-${color}`).classList.add('active');
+};
+
+/* ---------------- 地图初始化 ---------------- */
 const map = new maplibregl.Map({
   container: 'map',
   style: 'https://tiles.openfreemap.org/styles/positron',
-  // 爱丁堡中心
-  center: [-3.200, 55.948], 
-  // 【修复1】如果是手机，就缩小一点 (13.5)，视野更开阔；电脑则保持 15
-  zoom: isMobile ? 13.5 : 15,
-  // 【修复2】手机上把仰角调低一点 (50度)，防止建筑物挡住太多视线
-  pitch: isMobile ? 50 : 60,
-  bearing: 15,
-  antialias: true,
-  interactive: true
+  center: [-3.188, 55.953], // 默认爱丁堡
+  zoom: isMobile ? 12 : 14,
+  pitch: 60,
+  bearing: 0,
+  antialias: true
 });
 
-/* ---------------- Camera Animation Logic ---------------- */
-// 增加一个开关：如果用户在操作，就暂停旋转
-let userInteracting = false;
+/* ---------------- 核心逻辑：搜索邮编并燃放 ---------------- */
+window.startCelebration = async () => {
+    const input = document.getElementById('postcode-input');
+    const btn = document.getElementById('fire-btn');
+    const query = input.value.trim();
 
-// 监听用户操作：一旦触摸或鼠标按下，就停止自动旋转
-map.on('mousedown', () => { userInteracting = true; });
-map.on('touchstart', () => { userInteracting = true; });
-map.on('dragstart', () => { userInteracting = true; });
+    if (!query) {
+        alert("请先输入一个邮编或地名！");
+        return;
+    }
 
-// (可选) 如果你希望用户松手后过一会儿恢复旋转，可以取消下面这行的注释
-// map.on('moveend', () => { setTimeout(() => userInteracting = false, 2000); });
+    btn.innerText = "正在定位...";
+    btn.disabled = true;
 
-function rotateCamera(timestamp) {
-  // 【修复3】只有当用户没有在操作时，才自动旋转
-  if (!userInteracting) {
-    const rotationSpeed = 0.03; 
-    map.setBearing(map.getBearing() + rotationSpeed);
+    try {
+        // 使用 OpenStreetMap Nominatim API 进行免费地理编码
+        // 注意：这是免费接口，请勿高频滥用
+        const response = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}`);
+        const data = await response.json();
 
-    const tiltSpeed = timestamp / 3000; 
-    const newPitch = (isMobile ? 50 : 60) + Math.sin(tiltSpeed) * 10;
-    map.setPitch(newPitch);
-  }
+        if (data && data.length > 0) {
+            const lat = parseFloat(data[0].lat);
+            const lon = parseFloat(data[0].lon);
+            targetLngLat = { lng: lon, lat: lat };
 
-  requestAnimationFrame(rotateCamera);
-}
+            // 1. 飞到目标位置
+            map.flyTo({
+                center: [lon, lat],
+                zoom: 16,
+                pitch: 60,
+                bearing: Math.random() * 360,
+                speed: 1.2,
+                curve: 1
+            });
 
-/* ---------------- Firework Factory ---------------- */
-function createFirework(lng, lat) {
-  // 手机上稍微降低一点爆炸高度，保证在屏幕内
-  const targetAltitude = (isMobile ? 150 : 120) + Math.random() * 100;
+            btn.innerText = "🎆 烟花准备就绪 🎆";
+            
+            // 2. 到达后显示祝福语 (简单的延时模拟到达)
+            setTimeout(() => {
+                document.getElementById('greeting-overlay').classList.add('show-greeting');
+                // 隐藏UI以免遮挡
+                document.getElementById('ui-container').style.opacity = '0';
+                
+                // 3秒后恢复UI，但这3秒内会疯狂放烟花
+                setTimeout(() => {
+                     document.getElementById('ui-container').style.opacity = '1';
+                }, 4000);
+            }, 2000);
+
+        } else {
+            alert("未找到该位置，请尝试输入完整的城市名或邮编 (例如: Edinburgh EH1)");
+        }
+    } catch (e) {
+        console.error(e);
+        alert("网络请求失败，请稍后再试");
+    } finally {
+        btn.disabled = false;
+        btn.innerText = "🎆 在此燃放烟花 🎆";
+    }
+};
+
+
+/* ---------------- Three.js 烟花工厂 ---------------- */
+// 定义颜色配置
+const colorPalettes = {
+    red: { h: 0.0, s: 1.0, l: 0.6 },      // 红
+    gold: { h: 0.12, s: 1.0, l: 0.6 },    // 金
+    blue: { h: 0.6, s: 1.0, l: 0.6 }      // 蓝
+};
+
+function createFirework(lng, lat, colorKey) {
+  const targetAltitude = 120 + Math.random() * 80;
   const mercGround = maplibregl.MercatorCoordinate.fromLngLat({ lng, lat }, 0);
   const scale = mercGround.meterInMercatorCoordinateUnits();
 
-  // 手机为了性能，减少一点粒子数量 (150 vs 200)
-  const count = isMobile ? 150 : 200; 
+  const count = isMobile ? 100 : 200;
   const geometry = new THREE.BufferGeometry();
   const positions = new Float32Array(count * 3).fill(0);
   geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
 
+  // 根据选中的颜色生成材质
+  const c = colorPalettes[colorKey || 'red']; 
+  // 稍微有一些颜色抖动，让烟花不单调
+  const finalColor = new THREE.Color().setHSL(c.h + (Math.random()-0.5)*0.05, c.s, c.l);
+
   const material = new THREE.PointsMaterial({
-    color: new THREE.Color().setHSL(Math.random(), 1, 0.6),
-    // 手机屏幕像素密度高，粒子稍微调大一点点
-    size: isMobile ? 6 : 5, 
+    color: finalColor,
+    size: isMobile ? 8 : 6,
     transparent: true,
     opacity: 1,
-    depthWrite: false
+    depthWrite: false,
+    blending: THREE.AdditiveBlending // 让光效更亮
   });
 
   const points = new THREE.Points(geometry, material);
@@ -78,12 +264,11 @@ function createFirework(lng, lat) {
     targetAlt: targetAltitude,
     lng, lat,
     scale,
-    launchVX,
-    launchVZ,
+    launchVX, launchVZ,
     velocities: Array.from({length: count}, () => ({
-      x: (Math.random() - 0.5) * 20,
-      y: (Math.random() - 0.2) * 25,
-      z: (Math.random() - 0.5) * 20
+      x: (Math.random() - 0.5) * 25,
+      y: (Math.random() - 0.2) * 30,
+      z: (Math.random() - 0.5) * 25
     })),
     life: new Array(count).fill(1.0)
   };
@@ -92,38 +277,22 @@ function createFirework(lng, lat) {
 }
 
 map.on('load', async () => {
-  requestAnimationFrame(rotateCamera);
-
-  const layers = map.getStyle().layers;
-  let labelLayerId;
-  for (let i = 0; i < layers.length; i++) {
-    if (layers[i].type === 'symbol' && layers[i].layout['text-field']) {
-      labelLayerId = layers[i].id;
-      break;
-    }
-  }
-
+  /* --- 3D 建筑层 --- */
+  const labelLayerId = map.getStyle().layers.find(l => l.type === 'symbol' && l.layout['text-field'])?.id;
   map.addLayer({
     'id': 'buildings-3d',
     'source': 'openmaptiles', 
     'source-layer': 'building',
     'type': 'fill-extrusion',
     'paint': {
-      'fill-extrusion-color': '#222', 
-      'fill-extrusion-height': [
-        'interpolate', ['linear'], ['zoom'],
-        15, 0,
-        15.05, ['coalesce', ['get', 'render_height'], 15] 
-      ],
-      'fill-extrusion-base': [
-        'interpolate', ['linear'], ['zoom'],
-        15, 0,
-        15.05, ['coalesce', ['get', 'render_min_height'], 0]
-      ],
-      'fill-extrusion-opacity': 0.8
+      'fill-extrusion-color': '#1a1a2e', // 深蓝黑色建筑
+      'fill-extrusion-height': ['interpolate', ['linear'], ['zoom'], 15, 0, 15.05, ['coalesce', ['get', 'render_height'], 15]],
+      'fill-extrusion-base': ['interpolate', ['linear'], ['zoom'], 15, 0, 15.05, ['coalesce', ['get', 'render_min_height'], 0]],
+      'fill-extrusion-opacity': 0.85
     }
   }, labelLayerId);
 
+  /* --- 烟花层 --- */
   const fireworksLayer = {
     id: 'fireworks',
     type: 'custom',
@@ -131,35 +300,41 @@ map.on('load', async () => {
     onAdd(map, gl) {
       this.camera = new THREE.Camera();
       this.scene = new THREE.Scene();
-      this.renderer = new THREE.WebGLRenderer({ 
-        canvas: map.getCanvas(), 
-        context: gl, 
-        antialias: true, 
-        alpha: true 
-      });
+      this.renderer = new THREE.WebGLRenderer({ canvas: map.getCanvas(), context: gl, antialias: true, alpha: true });
       this.renderer.autoClear = false;
       this.fireworks = [];
 
+      // 循环产生烟花
       setInterval(() => {
-        const center = map.getCenter();
-        // 手机屏幕小，稍微增加一点烟花散布范围
-        const spread = isMobile ? 0.008 : 0.006; 
-        const lng = center.lng + (Math.random() - 0.5) * spread;
-        const lat = center.lat + (Math.random() - 0.5) * spread;
+        // 如果用户已经搜索了位置，就在目标位置附近放；否则在当前视野中心放
+        let centerLng, centerLat;
+        const spread = 0.004;
+
+        if (targetLngLat) {
+            // 这里的逻辑是：如果用户到了目标点，就主要在目标点放
+            centerLng = targetLngLat.lng;
+            centerLat = targetLngLat.lat;
+        } else {
+            const c = map.getCenter();
+            centerLng = c.lng;
+            centerLat = c.lat;
+        }
+
+        const lng = centerLng + (Math.random() - 0.5) * spread;
+        const lat = centerLat + (Math.random() - 0.5) * spread;
         
-        const fw = createFirework(lng, lat);
+        // 传入当前选中的颜色
+        const fw = createFirework(lng, lat, selectedColor);
         this.scene.add(fw);
         this.fireworks.push(fw);
-      }, 500);
+      }, 400); // 频率
     },
 
     render(gl, matrix) {
       this.camera.projectionMatrix.fromArray(matrix);
-      
       for (let i = this.fireworks.length - 1; i >= 0; i--) {
         const fw = this.fireworks[i];
         const ud = fw.userData;
-
         if (ud.state === 'launching') {
           ud.lng += ud.launchVX * 0.00003;
           ud.lat += ud.launchVZ * 0.00003;
@@ -175,11 +350,11 @@ map.on('load', async () => {
             pos[j*3]     += ud.velocities[j].x * ud.scale * 0.04;
             pos[j*3 + 1] += ud.velocities[j].y * ud.scale * 0.04;
             pos[j*3 + 2] += ud.velocities[j].z * ud.scale * 0.04;
-            ud.velocities[j].y -= 9.8 * ud.scale * 0.02; 
-            ud.life[j] -= 0.015; 
+            ud.velocities[j].y -= 9.8 * ud.scale * 0.02;
+            ud.life[j] -= 0.015;
             anyAlive = true;
           }
-          fw.material.opacity -= 0.01; 
+          fw.material.opacity -= 0.01;
           fw.geometry.attributes.position.needsUpdate = true;
           if (!anyAlive || fw.material.opacity <= 0) {
             this.scene.remove(fw);
@@ -194,7 +369,8 @@ map.on('load', async () => {
       map.triggerRepaint();
     }
   };
-
   map.addLayer(fireworksLayer);
 });
 </script>
+</body>
+</html>
